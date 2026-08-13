@@ -1,7 +1,7 @@
 {
   "92": {
     "inputs": {
-      "filename_prefix": "video/MiniMax_H3",
+      "filename_prefix": "video/MiniMax_H3_T2V",
       "format": "auto",
       "codec": "auto",
       "video": [
@@ -16,8 +16,8 @@
   },
   "115": {
     "inputs": {
-      "aspect_ratio": "9:16 (Portrait Widescreen)",
-      "megapixels": 0.7,
+      "aspect_ratio": "16:9 (Widescreen)",
+      "megapixels": 0.4,
       "multiple": 32
     },
     "class_type": "ResolutionSelector",
@@ -110,7 +110,7 @@
         0
       ],
       "sampler": [
-        "105:122",
+        "105:119",
         0
       ],
       "sigmas": [
@@ -166,7 +166,7 @@
   },
   "105:15": {
     "inputs": {
-      "noise_seed": 547807277916785
+      "noise_seed": 61494406948355
     },
     "class_type": "RandomNoise",
     "_meta": {
@@ -242,36 +242,20 @@
       "title": "Float (duration)"
     }
   },
-  "105:120": {
-    "inputs": {
-      "reuse_threshold": 0.12,
-      "start_percent": 0.1,
-      "end_percent": 0.9,
-      "max_consecutive_skips": 2,
-      "cache_device": "auto",
-      "vram_reserve_gb": 2,
-      "ram_reserve_gb": 4,
-      "signature_tokens": 128,
-      "signature_features": 64,
-      "verbose": true,
-      "sage_attention": "auto",
-      "model": [
-        "105:121",
-        0
-      ]
-    },
-    "class_type": "MiniMaxH3SpeedCache",
+  "105:119": {
+    "inputs": {},
+    "class_type": "MiniMaxH3TurboSampler",
     "_meta": {
-      "title": "⚡ MiniMax H3 加速缓存 · 安全版"
+      "title": "MiniMax-H3 Turbo Sampler (4-step)"
     }
   },
-  "105:121": {
+  "105:120": {
     "inputs": {
       "lora_name": "minimax_h3_turbo_v4_step600_ema.safetensors",
       "strength": 1,
       "low_vram": false,
       "model": [
-        "105:6",
+        "105:124",
         0
       ]
     },
@@ -280,11 +264,16 @@
       "title": "MiniMax-H3 Turbo LoRA"
     }
   },
-  "105:122": {
-    "inputs": {},
-    "class_type": "MiniMaxH3TurboSampler",
+  "105:124": {
+    "inputs": {
+      "model": [
+        "105:6",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3MemoryEfficientSageAttentionPatch",
     "_meta": {
-      "title": "MiniMax-H3 Turbo Sampler (4-step)"
+      "title": "MiniMax H3 Mem Eff Sage Attention Patch"
     }
   }
 }

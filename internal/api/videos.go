@@ -535,6 +535,60 @@ func ResetProjectVideos(c *gin.Context) {
 	})
 }
 
+// BatchDeleteVideos deletes videos and their generated files for a project.
+// If request body contains video_ids, only those are deleted; otherwise all videos are deleted.
+func BatchDeleteVideos(c *gin.Context) {
+	projectID := c.Param("id")
+
+	var req struct {
+		VideoIDs []uint `json:"video_ids"`
+	}
+	_ = c.ShouldBindJSON(&req)
+
+	var videos []models.Video
+	q := db.DB.Where("project_id = ?", projectID)
+	if len(req.VideoIDs) > 0 {
+		q = q.Where("id IN ?", req.VideoIDs)
+	}
+	if err := q.Find(&videos).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to fetch videos"})
+		return
+	}
+
+	deleteCount := 0
+	for _, video := range videos {
+		if err := removeGeneratedVideoAsset(video.GeneratedVideo); err != nil {
+			Log(LogLevelWarn, "BatchDeleteVideos", fmt.Sprintf("Failed to remove video file for video %d: %v", video.ID, err))
+		}
+		if err := clearVideoSegments(video.ID); err != nil {
+			Log(LogLevelWarn, "BatchDeleteVideos", fmt.Sprintf("Failed to clear segments for video %d: %v", video.ID, err))
+		}
+
+		// Reset video fields to clean state
+		video.GeneratedVideo = ""
+		video.GeneratedWorkflow = ""
+		video.Status = "draft"
+		video.PositivePrompt = ""
+		video.NegativePrompt = ""
+		video.VideoFingerprint = ""
+		video.Fingerprint = ""
+		video.Width = 0
+		video.Height = 0
+		video.JMTaskID = ""
+		if err := db.DB.Save(&video).Error; err != nil {
+			Log(LogLevelError, "BatchDeleteVideos", fmt.Sprintf("Failed to clear video %d: %v", video.ID, err))
+			continue
+		}
+		BroadcastUpdate("video", video.ID)
+		deleteCount++
+	}
+
+	c.JSON(http.StatusOK, gin.H{
+		"message": "Videos deleted successfully",
+		"count":   deleteCount,
+	})
+}
+
 func ResetVideo(c *gin.Context) {
 	projectID := c.Param("id")
 	videoID := c.Param("videoId")
@@ -1015,6 +1069,74 @@ func callLLMVideoFingerprint(provider models.LLMProvider, system, user string, t
 	return payload, nil
 }
 
+// constructMiniMaxH3RefinePrompt builds the LLM prompt for MiniMax H3 video prompt generation.
+// Output format: Chinese text with SHOT segments and Audio section (no JSON, no negative prompt).
+func constructMiniMaxH3RefinePrompt(video models.Video, project models.Project, lang string) (string, string) {
+	_ = lang
+	systemPrompt := `
+你是一位专门为 MiniMax H3 图生视频模型撰写提示词的导演。
+
+你的任务是根据场景基础描述、场景图中文提示词和对白，生成一段适合 MiniMax H3 模型的视频提示词。
+
+输出格式要求：
+1. 使用中文撰写，不要输出 JSON。
+2. 开头用一段总体描述，概括场景的视觉风格、光影、材质、色调和环境氛围。如果输入图已定义了静态布局，引用 <Picture 1> 来指代输入图像。
+3. 然后按 SHOT 分段描述镜头运动，每个 SHOT 以 "SHOT N:" 开头，描述该段的运镜、光影变化、材质细节和环境微动。
+4. 最后以 "Audio:" 开头写一段音效与音乐描述，包含环境声、动作音效和音乐走向。
+5. 不需要负向提示词，不要输出任何 "不要""禁止""排除" 类的排除性描述。
+6. 所有人物都必须改写成视觉身份描述，不能出现角色正式姓名。
+7. 不要返回 narration，也不要把任何解说、旁白、内心独白写进提示词。
+8. 如果当前镜头有对白，不需要在提示词里写出对白文本，只描述可见的画面动作和氛围。对白由独立的音频轨道处理。
+9. 重点描述"这张场景图里已经存在的元素接下来会如何运动和变化"，而不是长段复述静态场景本身。
+10. 每个 SHOT 只允许 1 个主导视觉事件，保持镜头感清晰。
+11. 如果画面里有雨、雪、烟雾、火苗、布帘、发丝、衣摆、倒影、水面等可持续变化的元素，必须明确写进提示词。
+12. 总时长控制在 3 到 15 秒之间，SHOT 数量通常 2-4 个即可。
+`
+
+	userPrompt := fmt.Sprintf(`
+请根据以下内容，生成一段 MiniMax H3 图生视频提示词。
+
+场景基础描述：
+%s
+
+场景图中文提示词：
+%s
+
+对白：
+%s
+
+补充要求：
+- 开头总体描述要概括视觉风格和氛围，用 <Picture 1> 引用输入图像。
+- SHOT 分段描述运镜、光影和微动变化，不要复述静态场景。
+- Audio 段写环境声、动作音效和音乐走向。
+- 如果画面里有可持续变化的背景元素（雨、烟、火苗、布帘、发丝、衣摆等），必须写进提示词。
+- 不需要写对白文本，只描述画面动作和氛围。
+- 不要输出任何排除性/负向描述。`, strings.TrimSpace(video.Scene.Description), strings.TrimSpace(video.Scene.PositivePrompt), "")
+
+	return systemPrompt, userPrompt
+}
+
+// callLLMMiniMaxH3Prompt calls LLM and returns plain text (not JSON) for MiniMax H3 video prompts.
+func callLLMMiniMaxH3Prompt(provider models.LLMProvider, system, user string, taskID string) (string, error) {
+	content, err := requestLLMContent(provider, system, user, taskID, 10*time.Minute, 5, "正在请求 LLM 生成 MiniMax H3 视频提示词...", "MiniMax H3 视频提示词")
+	if err != nil {
+		return "", err
+	}
+
+	db.DB.Create(&models.SystemLog{
+		Level:     LogLevelInfo,
+		Message:   llmLogMessage("LLM 完整返回(MiniMax H3 视频提示词)", provider),
+		Details:   content,
+		CreatedAt: time.Now(),
+	})
+
+	result := strings.TrimSpace(content)
+	if result == "" {
+		return "", fmt.Errorf("MiniMax H3 prompt is empty")
+	}
+	return result, nil
+}
+
 // HandleAutoGenerateVideoTask processes LLM regeneration of video_fingerprint only.
 func HandleAutoGenerateVideoTask(t *models.Task) (interface{}, error) {
 	var payload struct {
@@ -1042,6 +1164,32 @@ func HandleAutoGenerateVideoTask(t *models.Task) (interface{}, error) {
 	}
 
 	lang := loadPromptLanguage()
+
+	// Detect workflow family to choose the right prompt format
+	workflowFamily, _ := resolveSelectedVideoWorkflowFamily()
+	isMiniMaxH3 := strings.EqualFold(strings.TrimSpace(workflowFamily), "minimax_h3")
+
+	if isMiniMaxH3 {
+		// MiniMax H3: generate free-text prompt with SHOT/Audio structure
+		systemPrompt, userPrompt := constructMiniMaxH3RefinePrompt(video, project, lang)
+		Log(LogLevelInfo, llmLogMessage("LLM Request", llmProvider), fmt.Sprintf("Starting MiniMax H3 prompt regeneration for video: %d", video.ID))
+		Log(LogLevelInfo, llmLogMessage("LLM Request Prompt", llmProvider), fmt.Sprintf("System: %s\n\nUser: %s", systemPrompt, userPrompt))
+
+		enhancedPrompt, err := callLLMMiniMaxH3Prompt(llmProvider, systemPrompt, userPrompt, t.ID)
+		if err != nil {
+			return nil, err
+		}
+
+		video.VideoPrompt = enhancedPrompt
+		video.UpdatedAt = time.Now()
+		if err := db.DB.Save(&video).Error; err != nil {
+			return nil, fmt.Errorf("failed to update video prompt: %v", err)
+		}
+		BroadcastUpdate("video", video.ID)
+		return "MiniMax H3 video prompt regenerated successfully", nil
+	}
+
+	// LTX (default): generate video_fingerprint JSON
 	systemPrompt, userPrompt := constructVideoFingerprintRefinePrompt(video, project, lang)
 	Log(LogLevelInfo, llmLogMessage("LLM Request", llmProvider), fmt.Sprintf("Starting video fingerprint regeneration for video: %d", video.ID))
 	Log(LogLevelInfo, llmLogMessage("LLM Request Prompt", llmProvider), fmt.Sprintf("System: %s\n\nUser: %s", systemPrompt, userPrompt))
@@ -1064,6 +1212,120 @@ func HandleAutoGenerateVideoTask(t *models.Task) (interface{}, error) {
 	BroadcastUpdate("video", video.ID)
 
 	return "Video fingerprint regenerated successfully", nil
+}
+
+// BatchRegenerateVideoPrompts handles batch LLM regeneration of video prompts for all scenes in a project.
+func BatchRegenerateVideoPrompts(c *gin.Context) {
+	projectID := c.Param("id")
+	var project models.Project
+	if err := db.DB.First(&project, projectID).Error; err != nil {
+		c.JSON(http.StatusNotFound, gin.H{"error": "Project not found"})
+		return
+	}
+
+	var readyCount int64
+	if err := db.DB.Model(&models.Video{}).
+		Where("project_id = ?", project.ID).
+		Count(&readyCount).Error; err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to inspect videos"})
+		return
+	}
+	if readyCount == 0 {
+		c.JSON(http.StatusBadRequest, gin.H{"error": "No videos found in this project"})
+		return
+	}
+
+	taskPayload := map[string]interface{}{
+		"project_id": project.ID,
+	}
+	t, err := task.GlobalTaskManager.AddTask("batch_regenerate_video_prompts", taskPayload)
+	if err != nil {
+		c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to submit task"})
+		return
+	}
+	c.JSON(http.StatusAccepted, gin.H{"message": "Batch video prompt regeneration task submitted", "task_id": t.ID})
+}
+
+// HandleBatchRegenerateVideoPromptsTask processes batch video prompt regeneration.
+func HandleBatchRegenerateVideoPromptsTask(t *models.Task) (interface{}, error) {
+	var payload struct {
+		ProjectID uint `json:"project_id"`
+	}
+	if err := json.Unmarshal([]byte(t.Payload), &payload); err != nil {
+		return nil, fmt.Errorf("invalid payload: %v", err)
+	}
+
+	var project models.Project
+	if err := db.DB.First(&project, payload.ProjectID).Error; err != nil {
+		return nil, fmt.Errorf("project not found")
+	}
+
+	var llmProvider models.LLMProvider
+	if err := db.DB.Where("is_active = ?", true).First(&llmProvider).Error; err != nil {
+		return nil, fmt.Errorf("no active LLM provider found")
+	}
+
+	workflowFamily, _ := resolveSelectedVideoWorkflowFamily()
+	isMiniMaxH3 := strings.EqualFold(strings.TrimSpace(workflowFamily), "minimax_h3")
+
+	var videos []models.Video
+	if err := db.DB.
+		Where("project_id = ?", payload.ProjectID).
+		Order("episode asc, scene_number asc, id asc").
+		Find(&videos).Error; err != nil {
+		return nil, fmt.Errorf("failed to fetch videos: %v", err)
+	}
+
+	total := len(videos)
+	if total == 0 {
+		return "No videos to regenerate", nil
+	}
+
+	lang := loadPromptLanguage()
+	successCount := 0
+
+	for i, video := range videos {
+		progress := int(float64(i) / float64(total) * 100)
+		task.GlobalTaskManager.UpdateTaskProgress(t.ID, progress, fmt.Sprintf("Regenerating prompt %d/%d (ID: %d)", i+1, total, video.ID))
+
+		if err := ensureVideoSceneLoaded(&video, true); err != nil {
+			Log(LogLevelError, "Batch Prompt Error", fmt.Sprintf("Failed to load scene for video %d: %v", video.ID, err))
+			continue
+		}
+
+		if isMiniMaxH3 {
+			systemPrompt, userPrompt := constructMiniMaxH3RefinePrompt(video, project, lang)
+			enhancedPrompt, err := callLLMMiniMaxH3Prompt(llmProvider, systemPrompt, userPrompt, t.ID)
+			if err != nil {
+				Log(LogLevelError, "Batch Prompt Error", fmt.Sprintf("LLM failed for video %d: %v", video.ID, err))
+				continue
+			}
+			video.VideoPrompt = enhancedPrompt
+		} else {
+			systemPrompt, userPrompt := constructVideoFingerprintRefinePrompt(video, project, lang)
+			fingerprintPayload, err := callLLMVideoFingerprint(llmProvider, systemPrompt, userPrompt, t.ID)
+			if err != nil {
+				Log(LogLevelError, "Batch Prompt Error", fmt.Sprintf("LLM failed for video %d: %v", video.ID, err))
+				continue
+			}
+			serialized, err := json.MarshalIndent(fingerprintPayload, "", "  ")
+			if err != nil {
+				Log(LogLevelError, "Batch Prompt Error", fmt.Sprintf("Failed to serialize fingerprint for video %d: %v", video.ID, err))
+				continue
+			}
+			video.VideoFingerprint = string(serialized)
+		}
+
+		video.UpdatedAt = time.Now()
+		if err := db.DB.Save(&video).Error; err != nil {
+			Log(LogLevelError, "Batch Prompt Error", fmt.Sprintf("Failed to save video %d: %v", video.ID, err))
+			continue
+		}
+		BroadcastUpdate("video", video.ID)
+		successCount++
+	}
+
+	return fmt.Sprintf("Batch prompt regeneration complete: %d/%d succeeded", successCount, total), nil
 }
 
 // waitForVideoCompletion blocks until video is generated or failed
@@ -1149,7 +1411,10 @@ func resolveSelectedVideoWorkflowFamily() (string, error) {
 		if strings.Contains(name, "ltx") || strings.Contains(fileName, "ltx") {
 			return "ltx", nil
 		}
-		return "", fmt.Errorf("only the LTX video workflow is supported in this version")
+		if strings.Contains(name, "minimax") || strings.Contains(fileName, "minimax") {
+			return "minimax_h3", nil
+		}
+		return "", fmt.Errorf("unsupported video workflow family: %s", workflowName)
 	}
 
 	return "", fmt.Errorf("workflow file for '%s' not found", workflowName)
@@ -1320,6 +1585,9 @@ func HandleBatchGenerateVideosTask(t *models.Task) (interface{}, error) {
 				Log(LogLevelError, "Batch Video Error", fmt.Sprintf("Failed to render video %d: %v", video.ID, err))
 				continue
 			}
+			// 等待 GPU 显存释放，避免下一个视频 OOM
+			Log(LogLevelInfo, "Batch Video Delay", fmt.Sprintf("Waiting 10s for GPU memory release before next video..."))
+			time.Sleep(10 * time.Second)
 		} else {
 			if err := queueConfiguredVideoRender(video.ID, payload.ProjectID); err != nil {
 				Log(LogLevelError, "Batch Video Error", fmt.Sprintf("Failed to queue video %d: %v", video.ID, err))
@@ -1390,7 +1658,11 @@ func ensureVideoSegmentPlan(videoID uint, projectID uint) error {
 	}
 
 	lang := loadPromptLanguage()
-	plan, err := buildStoredVideoSegmentPlan(video, "ltx", lang)
+	workflowFamily, err := resolveSelectedVideoWorkflowFamily()
+	if err != nil {
+		return err
+	}
+	plan, err := buildStoredVideoSegmentPlan(video, workflowFamily, lang)
 	if err != nil {
 		return err
 	}

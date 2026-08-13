@@ -252,8 +252,9 @@ func validateVideoFingerprintPhaseContent(payload *VideoFingerprintPayload) erro
 }
 
 func buildStoredVideoSegmentPlan(video models.Video, workflowFamily string, lang string) (*VideoSegmentPlanResponse, error) {
-	if family := strings.TrimSpace(strings.ToLower(workflowFamily)); family != "" && family != "ltx" {
-		return nil, fmt.Errorf("only the LTX video workflow is supported in this version")
+	family := strings.TrimSpace(strings.ToLower(workflowFamily))
+	if family != "" && family != "ltx" && family != "minimax_h3" {
+		return nil, fmt.Errorf("unsupported video workflow family: %s", workflowFamily)
 	}
 	fullPrompt := strings.TrimSpace(video.VideoPrompt)
 	if fullPrompt == "" {
@@ -265,16 +266,19 @@ func buildStoredVideoSegmentPlan(video models.Video, workflowFamily string, lang
 	total := clampStoredVideoTotalDuration(video.DurationSeconds)
 	recommendedFPS := defaultSegmentFPS
 
-	if payload, err := parseVideoFingerprintPayload(video.VideoFingerprint); err == nil {
-		_, promptNeg, _, parsedPlayerDesc, _ := selectVideoFingerprintLanguageFields(payload, lang)
-		warnNegativePromptLeadIn(fmt.Sprintf("video=%d video_fingerprint.prompt_neg", video.ID), promptNeg)
-		if strings.TrimSpace(parsedPlayerDesc) != "" {
-			playerDesc = strings.TrimSpace(parsedPlayerDesc)
+	// MiniMax H3 uses free-text VideoPrompt (no video_fingerprint JSON), skip JSON parsing
+	if family != "minimax_h3" {
+		if payload, err := parseVideoFingerprintPayload(video.VideoFingerprint); err == nil {
+			_, promptNeg, _, parsedPlayerDesc, _ := selectVideoFingerprintLanguageFields(payload, lang)
+			warnNegativePromptLeadIn(fmt.Sprintf("video=%d video_fingerprint.prompt_neg", video.ID), promptNeg)
+			if strings.TrimSpace(parsedPlayerDesc) != "" {
+				playerDesc = strings.TrimSpace(parsedPlayerDesc)
+			}
+			if payload.TotalDurationSeconds > 0 {
+				total = clampStoredVideoTotalDuration(payload.TotalDurationSeconds)
+			}
+			recommendedFPS = sanitizeRecommendedVideoFPS(payload.RecommendedFPS, defaultSegmentFPS)
 		}
-		if payload.TotalDurationSeconds > 0 {
-			total = clampStoredVideoTotalDuration(payload.TotalDurationSeconds)
-		}
-		recommendedFPS = sanitizeRecommendedVideoFPS(payload.RecommendedFPS, defaultSegmentFPS)
 	}
 	if playerDesc == "" {
 		playerDesc = fullPrompt
@@ -801,7 +805,11 @@ func queueLTXVideoRender(videoID uint, projectID uint) error {
 	}
 	if segmentCount == 0 {
 		lang := loadPromptLanguage()
-		plan, err := buildStoredVideoSegmentPlan(video, "ltx", lang)
+		workflowFamily, familyErr := resolveSelectedVideoWorkflowFamily()
+		if familyErr != nil {
+			return familyErr
+		}
+		plan, err := buildStoredVideoSegmentPlan(video, workflowFamily, lang)
 		if err != nil {
 			return err
 		}
@@ -1038,7 +1046,10 @@ func triggerVideoGenerationWithInput(video models.Video, inputImagePath string, 
 	negative = buildSegmentNegativePrompt(negative)
 	warnNegativePromptLeadIn(fmt.Sprintf("video=%d segment submit negative prompt", video.ID), negative)
 	setInput(meta.PositiveNodeID, meta.PositiveInputKey, positive)
-	setInput(meta.NegativeNodeID, meta.NegativeInputKey, negative)
+	// Only inject negative prompt if the workflow has a negative prompt node (LTX does; MiniMax H3 does not).
+	if meta.NegativeNodeID != "" {
+		setInput(meta.NegativeNodeID, meta.NegativeInputKey, negative)
+	}
 
 	width, height := getConfiguredVideoSize()
 	setInput(meta.SeedNodeID, meta.SeedInputKey, seed)
@@ -1053,7 +1064,16 @@ func triggerVideoGenerationWithInput(video models.Video, inputImagePath string, 
 	if fps > 0 {
 		setInput(meta.FPSNodeID, meta.FPSInputKey, fps)
 	}
-	if length > 0 {
+	// For MiniMax H3: set duration in seconds on the PrimitiveFloat source node
+	// instead of frame count on the ComfyMathExpression consumer.
+	// Compute duration in seconds from frame count and fps: length = fps*seconds + 1.
+	durationSeconds := 0
+	if fps > 0 && length > 0 {
+		durationSeconds = (length - 1) / fps
+	}
+	if meta.DurationValueNodeID != "" && durationSeconds > 0 {
+		setInput(meta.DurationValueNodeID, "value", float64(durationSeconds))
+	} else if length > 0 {
 		setInput(meta.LengthNodeID, meta.LengthInputKey, length)
 	}
 	for _, node := range wfJSON {
@@ -1071,7 +1091,7 @@ func triggerVideoGenerationWithInput(video models.Video, inputImagePath string, 
 
 		switch classType {
 		case "PrimitiveStringMultiline", "PrimitiveString":
-			if title == "Prompt" {
+			if strings.Contains(strings.ToLower(title), "prompt") {
 				inputs["value"] = positive
 			}
 		case "PreviewAny":
@@ -1097,12 +1117,13 @@ func triggerVideoGenerationWithInput(video models.Video, inputImagePath string, 
 		}
 	}
 
-	var imageNodeID string
+	// Find ALL LoadImage nodes so that multi-reference workflows (e.g. MiniMax H3 r2v)
+	// also get their reference images set, not just the first LoadImage.
+	var imageNodeIDs []string
 	for id, node := range wfJSON {
 		if nodeMap, ok := node.(map[string]interface{}); ok {
 			if classType, ok := nodeMap["class_type"].(string); ok && classType == "LoadImage" {
-				imageNodeID = id
-				break
+				imageNodeIDs = append(imageNodeIDs, id)
 			}
 		}
 	}
@@ -1112,12 +1133,12 @@ func triggerVideoGenerationWithInput(video models.Video, inputImagePath string, 
 		return "", err
 	}
 	uploadedName, err := UploadToComfyUIInput(absImagePath)
-	if err != nil {
-		if imageNodeID != "" {
-			setInput(imageNodeID, "image", absImagePath)
+	for _, nodeID := range imageNodeIDs {
+		if err != nil {
+			setInput(nodeID, "image", absImagePath)
+		} else {
+			setInput(nodeID, "image", uploadedName)
 		}
-	} else if imageNodeID != "" {
-		setInput(imageNodeID, "image", uploadedName)
 	}
 
 	logComfyWorkflowPayload("Video ComfyUI Workflow Payload", workflowLabel, wfJSON)

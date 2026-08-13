@@ -636,5 +636,19 @@
     "_meta": {
       "title": "Boolean (Enable Prompt Enhance)"
     }
+  },
+  "410": {
+    "inputs": {
+      "offload_model": true,
+      "offload_cache": true,
+      "anything": [
+        "75",
+        0
+      ]
+    },
+    "class_type": "VRAMCleanup",
+    "_meta": {
+      "title": "🎈VRAM-Cleanup"
+    }
   }
 }

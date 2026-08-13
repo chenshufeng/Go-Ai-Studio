@@ -416,6 +416,10 @@ type WorkflowMetadata struct {
 	FPSNodeID    string `json:"fps_node_id"`
 	LengthNodeID string `json:"length_node_id"` // Frame count
 
+	// DurationValueNodeID is the PrimitiveFloat node that holds duration in seconds
+	// (used by MiniMax H3 workflows where length is computed via ComfyMathExpression)
+	DurationValueNodeID string `json:"duration_value_node_id,omitempty"`
+
 	// Input keys (in case they vary, though usually standard)
 	SeedInputKey   string `json:"seed_input_key"`   // usually "seed" or "noise_seed"
 	WidthInputKey  string `json:"width_input_key"`  // usually "width"

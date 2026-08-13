@@ -9,6 +9,16 @@ import (
 	"kt-ai-studio/internal/models"
 )
 
+// isMiniMaxPromptNode returns true if the node class type accepts a "prompt" input
+// that should be treated as the positive video prompt (MiniMax H3 family).
+func isMiniMaxPromptNode(classType string) bool {
+	switch classType {
+	case "MiniMaxH3ImageToVideo", "MiniMaxH3ReferenceToVideo":
+		return true
+	}
+	return false
+}
+
 // ParseWorkflow 解析 ComfyUI 工作流 JSON 文件并提取元数据
 func ParseWorkflow(filePath string) (*models.WorkflowMetadata, error) {
 	data, err := os.ReadFile(filePath)
@@ -158,8 +168,30 @@ func ParseWorkflow(filePath string) (*models.WorkflowMetadata, error) {
 			}
 		}
 
+		// Also follow "conditioning" links directly from the sampler
+		// (needed for MiniMax H3 where the prompt sits on the conditioning node).
+		if condInput, ok := sampler.Inputs["conditioning"].([]interface{}); ok && len(condInput) > 0 {
+			if condID, ok := condInput[0].(string); ok {
+				if meta.PositiveNodeID == "" {
+					resolveBranchFromSource(condID, "positive")
+				}
+				if meta.NegativeNodeID == "" {
+					resolveBranchFromSource(condID, "negative")
+				}
+			}
+		}
+
 		// If both found, we can stop
 		if meta.PositiveNodeID != "" && meta.NegativeNodeID != "" {
+			break
+		}
+	}
+
+	// Detect PrimitiveFloat duration nodes (MiniMax H3 uses these for duration in seconds).
+	for id, node := range wf {
+		title, _ := node.Meta["title"].(string)
+		if node.ClassType == "PrimitiveFloat" && strings.Contains(strings.ToLower(title), "duration") {
+			meta.DurationValueNodeID = id
 			break
 		}
 	}
@@ -334,6 +366,24 @@ func findCLIPTextEncode(wf models.WorkflowJSON, currentID string, depth int) (st
 			}
 		}
 		return currentID, "prompt"
+	}
+
+	// MiniMax H3 prompt nodes: the "prompt" may be a direct string value (i2v/t2v)
+	// or linked to a PrimitiveStringMultiline (r2v).
+	if isMiniMaxPromptNode(node.ClassType) {
+		if promptInput, ok := node.Inputs["prompt"].([]interface{}); ok && len(promptInput) > 0 {
+			if sourceID, ok := promptInput[0].(string); ok {
+				nodeID, key := findCLIPTextEncode(wf, sourceID, depth+1)
+				if nodeID != "" {
+					return nodeID, key
+				}
+			}
+		}
+		// Direct string prompt (no link) — return this node as the prompt source.
+		if _, ok := node.Inputs["prompt"].(string); ok {
+			return currentID, "prompt"
+		}
+		return "", ""
 	}
 
 	// 如果遇到 ConditioningZeroOut 或其他明确表示空的节点，停止追踪并返回空

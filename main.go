@@ -87,6 +87,7 @@ func main() {
 	task.GlobalTaskManager.RegisterHandler("render_video_segments", api.HandleRenderVideoSegmentsTask)
 	task.GlobalTaskManager.RegisterHandler("render_video_from_segment", api.HandleRenderVideoFromSegmentTask)
 	task.GlobalTaskManager.RegisterHandler("batch_generate_videos", api.HandleBatchGenerateVideosTask)
+	task.GlobalTaskManager.RegisterHandler("batch_regenerate_video_prompts", api.HandleBatchRegenerateVideoPromptsTask)
 	task.GlobalTaskManager.RegisterHandler("repair_scene_video_prompts", api.HandleRepairSceneVideoPromptsTask)
 	task.GlobalTaskManager.RegisterHandler("render_multi_visual_project", api.HandleRenderMultiVisualProjectTask)
 	task.GlobalTaskManager.RegisterHandler("render_store_visit_spot_image", api.HandleRenderStoreVisitSpotImageTask)
@@ -349,9 +350,11 @@ func main() {
 		apiGroup.POST("/projects/:id/videos/:videoId/reset-status", api.ResetVideo)
 		apiGroup.POST("/projects/:id/videos/:videoId/segments/:segmentId/regenerate", api.RegenerateVideoSegment)
 		apiGroup.POST("/projects/:id/videos/reset", api.ResetProjectVideos)
+		apiGroup.POST("/projects/:id/videos/batch-delete", api.BatchDeleteVideos)
 		apiGroup.POST("/projects/:id/videos/export", api.ExportEpisodeVideos)
 		apiGroup.POST("/projects/:id/videos/export-merged", api.ExportMergedEpisodeVideo)
 		apiGroup.POST("/projects/:id/batch-generate-videos", api.BatchGenerateVideos)
+		apiGroup.POST("/projects/:id/batch-regenerate-video-prompts", api.BatchRegenerateVideoPrompts)
 
 		// Settings Routes
 		apiGroup.GET("/settings", api.GetSettings)

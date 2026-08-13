@@ -16,6 +16,7 @@ import {
   RotateCcw,
   Pencil,
   Trash2,
+  FileText,
 } from "lucide-react";
 import type {
   Project,
@@ -2063,6 +2064,28 @@ export default function ProjectDetail() {
       });
   };
 
+  const handleBatchRegenerateVideoPrompts = () => {
+    if (videoEpisodeSummaries.length === 0) {
+      toast.error("当前还没有可处理的镜头，请先完成镜头入库");
+      return;
+    }
+    const toastId = toast("正在批量重新生成视频提示词...", {
+      description: "将根据当前工作流格式为所有镜头重新生成视频提示词",
+    });
+    axios
+      .post(`/api/projects/${id}/batch-regenerate-video-prompts`)
+      .then(() => {
+        fetchVideos(id!);
+        toast.success("批量提示词重推任务已提交", { id: toastId });
+      })
+      .catch((err) => {
+        console.error(err);
+        toast.error(err.response?.data?.error || "提交任务失败", {
+          id: toastId,
+        });
+      });
+  };
+
   const handleBatchGenerateCharactersAndScenes = async () => {
     const toastId = toast("正在提交人物+场景生成任务...", {
       description: "会先等待人物基础图完成，再批量提交场景图生成",
@@ -2091,6 +2114,10 @@ export default function ProjectDetail() {
 
   const [isResetVideosConfirmOpen, setIsResetVideosConfirmOpen] =
     useState(false);
+  const [isBatchDeleteVideosConfirmOpen, setIsBatchDeleteVideosConfirmOpen] =
+    useState(false);
+  const [videoSelectMode, setVideoSelectMode] = useState(false);
+  const [selectedVideoIds, setSelectedVideoIds] = useState<Set<number>>(new Set());
   const [isExportDialogOpen, setIsExportDialogOpen] = useState(false);
   const [exportEpisode, setExportEpisode] = useState<number | "">("");
   const [isEpisodeAssetResetDialogOpen, setIsEpisodeAssetResetDialogOpen] =
@@ -2107,6 +2134,56 @@ export default function ProjectDetail() {
 
   const handleResetVideos = () => {
     setIsResetVideosConfirmOpen(true);
+  };
+
+  const handleBatchDeleteVideos = () => {
+    setVideoSelectMode((prev) => {
+      if (prev) {
+        setSelectedVideoIds(new Set());
+      }
+      return !prev;
+    });
+  };
+
+  const toggleVideoSelection = (videoId: number) => {
+    setSelectedVideoIds((prev) => {
+      const next = new Set(prev);
+      if (next.has(videoId)) {
+        next.delete(videoId);
+      } else {
+        next.add(videoId);
+      }
+      return next;
+    });
+  };
+
+  const toggleSelectAllVideos = () => {
+    const allIds = Object.values(videoGrouped).flat().map((v) => v.id);
+    if (selectedVideoIds.size === allIds.length) {
+      setSelectedVideoIds(new Set());
+    } else {
+      setSelectedVideoIds(new Set(allIds));
+    }
+  };
+
+  const confirmBatchDeleteVideos = () => {
+    setIsBatchDeleteVideosConfirmOpen(false);
+    const ids = Array.from(selectedVideoIds);
+    const toastId = toast("正在删除选中视频...", {
+      description: `将删除 ${ids.length} 个视频的文件、分段数据，并清空提示词`,
+    });
+    axios
+      .post(`/api/projects/${id}/videos/batch-delete`, { video_ids: ids })
+      .then((res) => {
+        fetchVideos(id!);
+        setSelectedVideoIds(new Set());
+        setVideoSelectMode(false);
+        toast.success(`已删除 ${res.data.count} 条视频`, { id: toastId });
+      })
+      .catch((err) => {
+        console.error(err);
+        toast.error(err.response?.data?.error || "删除失败", { id: toastId });
+      });
   };
 
   const confirmResetVideos = () => {
@@ -2474,6 +2551,13 @@ export default function ProjectDetail() {
             ) : (
               <>
                 <button
+                  onClick={handleBatchRegenerateVideoPrompts}
+                  className="w-full flex items-center gap-2 bg-secondary/50 hover:bg-secondary text-secondary-foreground px-4 py-3 rounded-md transition-colors text-sm"
+                >
+                  <FileText className="w-4 h-4 text-blue-500" />
+                  批量重推视频提示词
+                </button>
+                <button
                   onClick={handleBatchGenerateVideos}
                   className="w-full flex items-center gap-2 bg-secondary/50 hover:bg-secondary text-secondary-foreground px-4 py-3 rounded-md transition-colors text-sm"
                 >
@@ -2567,6 +2651,16 @@ export default function ProjectDetail() {
                     className="flex items-center gap-2 border border-destructive/40 bg-background px-3 py-1.5 rounded-md text-sm text-destructive hover:bg-destructive/5 transition-colors"
                   >
                     <RotateCcw className="w-4 h-4" /> 一键重置
+                  </button>
+                  <button
+                    onClick={handleBatchDeleteVideos}
+                    className={`flex items-center gap-2 border px-3 py-1.5 rounded-md text-sm transition-colors ${
+                      videoSelectMode
+                        ? "border-destructive bg-destructive/10 text-destructive"
+                        : "border-destructive/40 bg-background text-destructive hover:bg-destructive/5"
+                    }`}
+                  >
+                    <Trash2 className="w-4 h-4" /> {videoSelectMode ? "取消选择" : "选择删除"}
                   </button>
                   {exportableEpisodes.length > 0 && (
                     <button
@@ -3056,8 +3150,24 @@ export default function ProjectDetail() {
                                 return (
                               <div
                                 key={video.id}
-                                className="p-4 flex gap-4 hover:bg-accent/10 transition-colors"
+                                className={`p-4 flex gap-4 transition-colors ${
+                                  videoSelectMode
+                                    ? selectedVideoIds.has(video.id)
+                                      ? "bg-primary/5 hover:bg-primary/10"
+                                      : "hover:bg-accent/10"
+                                    : "hover:bg-accent/10"
+                                }`}
                               >
+                                {videoSelectMode && (
+                                  <div className="flex items-center">
+                                    <input
+                                      type="checkbox"
+                                      checked={selectedVideoIds.has(video.id)}
+                                      onChange={() => toggleVideoSelection(video.id)}
+                                      className="w-4 h-4 rounded border-border cursor-pointer"
+                                    />
+                                  </div>
+                                )}
                                 {/* Preview */}
                                 <div
                                   className="w-32 h-20 bg-secondary rounded-md shrink-0 cursor-pointer overflow-hidden relative group"
@@ -3784,6 +3894,29 @@ export default function ProjectDetail() {
               className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
             >
               确认重置
+            </AlertDialogAction>
+          </AlertDialogFooter>
+        </AlertDialogContent>
+      </AlertDialog>
+
+      <AlertDialog
+        open={isBatchDeleteVideosConfirmOpen}
+        onOpenChange={setIsBatchDeleteVideosConfirmOpen}
+      >
+        <AlertDialogContent>
+          <AlertDialogHeader>
+            <AlertDialogTitle>批量删除视频</AlertDialogTitle>
+            <AlertDialogDescription>
+              此操作会删除选中的 {selectedVideoIds.size} 个视频的生成文件、分段数据，并清空视频提示词和指纹，状态恢复为草稿。场景图不受影响。确定继续？
+            </AlertDialogDescription>
+          </AlertDialogHeader>
+          <AlertDialogFooter>
+            <AlertDialogCancel>取消</AlertDialogCancel>
+            <AlertDialogAction
+              onClick={confirmBatchDeleteVideos}
+              className="bg-destructive text-destructive-foreground hover:bg-destructive/90"
+            >
+              确认删除
             </AlertDialogAction>
           </AlertDialogFooter>
         </AlertDialogContent>
@@ -4657,6 +4790,24 @@ export default function ProjectDetail() {
               <X className="w-8 h-8 pointer-events-none" />
             </button>
           </div>
+        </div>
+      )}
+
+      {videoSelectMode && selectedVideoIds.size > 0 && (
+        <div className="fixed bottom-6 left-1/2 -translate-x-1/2 z-40 flex items-center gap-3 rounded-full bg-destructive px-5 py-3 text-sm font-medium text-destructive-foreground shadow-lg">
+          <span>已选 {selectedVideoIds.size} 个视频</span>
+          <button
+            onClick={toggleSelectAllVideos}
+            className="px-2 py-1 rounded-full bg-white/20 hover:bg-white/30 text-xs transition-colors"
+          >
+            {selectedVideoIds.size === Object.values(videoGrouped).flat().length ? "取消全选" : "全选"}
+          </button>
+          <button
+            onClick={() => setIsBatchDeleteVideosConfirmOpen(true)}
+            className="px-3 py-1 rounded-full bg-white text-destructive hover:bg-white/90 text-xs font-medium transition-colors"
+          >
+            确认删除
+          </button>
         </div>
       )}
 

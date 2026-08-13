@@ -1,7 +1,7 @@
 {
   "92": {
     "inputs": {
-      "filename_prefix": "video/MiniMax_H3",
+      "filename_prefix": "video/MiniMax_H3_I2V",
       "format": "auto",
       "codec": "auto",
       "video": [
@@ -16,7 +16,7 @@
   },
   "114": {
     "inputs": {
-      "image": "b53cd5f1b5f44758b9cb3fce15fd47e5.jpeg"
+      "image": "e3fd9de6-4cb6-4171-a385-f9285871e087.png"
     },
     "class_type": "LoadImage",
     "_meta": {
@@ -26,7 +26,7 @@
   "115": {
     "inputs": {
       "aspect_ratio": "1:1 (Square)",
-      "megapixels": 0.6,
+      "megapixels": 0.4,
       "multiple": 32
     },
     "class_type": "ResolutionSelector",
@@ -119,10 +119,10 @@
   "105:9": {
     "inputs": {
       "scheduler": "simple",
-      "steps": 8,
+      "steps": 6,
       "denoise": 1,
       "model": [
-        "105:127",
+        "105:6",
         0
       ]
     },
@@ -142,7 +142,7 @@
         0
       ],
       "sampler": [
-        "105:123",
+        "105:121",
         0
       ],
       "sigmas": [
@@ -162,7 +162,7 @@
   "105:16": {
     "inputs": {
       "model": [
-        "105:127",
+        "105:123",
         0
       ],
       "conditioning": [
@@ -198,7 +198,7 @@
   },
   "105:15": {
     "inputs": {
-      "noise_seed": 679716646644263
+      "noise_seed": 519600855767282
     },
     "class_type": "RandomNoise",
     "_meta": {
@@ -225,7 +225,7 @@
   },
   "105:104": {
     "inputs": {
-      "prompt": "【前置约束】（非常重要）：请严格保持原图的手绘童话插画风格，画面色彩明媚、治愈，绝对不要变成写实风或照片风。影片背景是雨天湖畔，有红黄秋叶和绿色草地。\n\n【主体与环境】\n画面中，两只圆润可爱的黑白大熊猫正坐在湖畔的草坪上野餐。它们坐在红白格子的野餐垫上，垫子上放着竹编篮子、白色陶瓷盘，盘中有红提、苹果和青提。熊猫旁边停着一辆明黄色的复古敞篷小汽车。天空中飘着细密的雨丝，雨点落在湖面上激起一圈圈同心圆涟漪。整个画面氛围宁静、治愈，雨雾蒙蒙。\n\n【时间轴与动作分解】（核心反差发生在这里）\n视频前3秒： 雨滴不断滴落在湖面上，泛起真实的涟漪。左侧的熊猫捧着杯子仰头喝果汁，喉咙处有吞咽的动作；右侧的熊猫缓慢地拿起一颗红色的提子。黄色敞篷车静静地停在雨中，一切都很祥和。\n第3秒到第5秒（第一重反差发生）： 突然！身后的黄色敞篷车毫无征兆地自动亮起车前灯，两道明亮的黄光闪烁了一下。紧接着，车上的雨刷器猛烈地刮动了两下，汽车发出一声低沉的喇叭轰鸣声，车身微微晃动。\n第5秒到第8秒（第二重反差爆炸）： 随着汽车的响动，原本只有雨水波纹的湖面瞬间发生了奇幻的巨变。一圈巨大的、闪烁着红黄蓝绿的彩色光环从湖心荡漾开来，水面如同沸腾一般。几条晶莹剔透的、发着彩色光芒的魔法锦鲤从水波中跳出，溅起斑斓的水花，水花在雨天里折射出迷幻的彩虹光。\n第8秒到第10秒（终极反差萌）： 面对身后的汽车喇叭声和面前的魔法鱼跃，两只大熊猫展现出了极其巨大的反差。它们并没有表现出惊慌失措，而是保持着佛系的淡定。左侧熊猫轻轻地、平稳地把空杯子放回野餐垫上；右侧熊猫则慢条斯理地咬下了一颗葡萄，闭着眼睛咀嚼，仿佛这个奇幻的世界与它们毫无关联。视频最后以这个荒诞又治愈的定格画面结束。\n\n【负面提示词】（H3防崩坏必加）\n熊猫变形，熊猫长出多只手臂，汽车变形融化，汽车消失，湖水变干，画面变成照片写实，人物（熊猫）动作过快像快进，画面模糊，画风突变，扭曲，畸形，掉帧，色彩完全丢失。",
+      "prompt": "Editorial tech product film. The transparent gaming mouse from <Picture 1> in its original scene: a pitch-black studio void with a dark, subtle reflective surface, lit by dramatic duotone vibrant blue and warm neon orange rim lighting, deep soft shadow falloff into pure black. Monochromatic dark palette with electric blue and amber accents. Material motif: glowing internal metallic micro-components and glossy acrylic refractions. The environment is constant throughout.\nSHOT 1: The scene opens exactly on image 1, the mouse resting confidently on the dark surface; the blue and orange lights slowly pulse brighter, refracting deeply through the transparent acrylic shell as the camera executes a slow, deliberate push-in to reveal the intricate circuitry.\nSHOT 2: Cut to an extreme macro profile of the ridged scroll wheel and layered internal micro-components; the camera glides slowly along the side as a sharp beam of warm orange light sweeps across the metallic textures, contrasting perfectly against the deep blue ambient glow.\nSHOT 3: Cut to a low-angle beauty shot: the mouse levitates weightlessly a few centimeters above the dark reflective surface, rotating in a slow, precise orbit; the duotone lighting flares gently along the glassy transparent edges before fading slowly into a sleek silhouette.\nAudio: deep pulsing sub-bass room tone, sharp tactile mechanical clicks, a sweeping glassy whoosh on cuts, and a rising electronic swell that resolves to near-silence on the final fade. ",
       "width": [
         "115",
         0
@@ -271,56 +271,45 @@
   },
   "105:111": {
     "inputs": {
-      "value": 10
+      "value": 5
     },
     "class_type": "PrimitiveFloat",
     "_meta": {
       "title": "Float (duration)"
     }
   },
-  "105:123": {
+  "105:121": {
     "inputs": {},
     "class_type": "MiniMaxH3TurboSampler",
     "_meta": {
       "title": "MiniMax-H3 Turbo Sampler (4-step)"
     }
   },
-  "105:126": {
+  "105:122": {
+    "inputs": {
+      "model": [
+        "105:6",
+        0
+      ]
+    },
+    "class_type": "MiniMaxH3MemoryEfficientSageAttentionPatch",
+    "_meta": {
+      "title": "MiniMax H3 Mem Eff Sage Attention Patch"
+    }
+  },
+  "105:123": {
     "inputs": {
       "lora_name": "minimax_h3_turbo_v4_step600_ema.safetensors",
       "strength": 1,
-      "low_vram": false,
+      "low_vram": true,
       "model": [
-        "105:6",
+        "105:122",
         0
       ]
     },
     "class_type": "MiniMaxH3TurboLoRA",
     "_meta": {
       "title": "MiniMax-H3 Turbo LoRA"
-    }
-  },
-  "105:127": {
-    "inputs": {
-      "reuse_threshold": 0.12,
-      "start_percent": 0.1,
-      "end_percent": 0.9,
-      "max_consecutive_skips": 2,
-      "cache_device": "auto",
-      "vram_reserve_gb": 2,
-      "ram_reserve_gb": 4,
-      "signature_tokens": 128,
-      "signature_features": 64,
-      "verbose": true,
-      "sage_attention": "auto",
-      "model": [
-        "105:126",
-        0
-      ]
-    },
-    "class_type": "MiniMaxH3SpeedCache",
-    "_meta": {
-      "title": "⚡ MiniMax H3 加速缓存 · 安全版"
     }
   }
 }

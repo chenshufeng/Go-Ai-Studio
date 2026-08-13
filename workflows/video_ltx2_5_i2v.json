@@ -48,22 +48,6 @@
       "title": "🎈VRAM-Cleanup"
     }
   },
-  "406": {
-    "inputs": {
-      "clean_file_cache": true,
-      "clean_processes": true,
-      "clean_dlls": true,
-      "retry_times": 3,
-      "anything": [
-        "75",
-        0
-      ]
-    },
-    "class_type": "RAMCleanup",
-    "_meta": {
-      "title": "🎈RAM-Cleanup"
-    }
-  },
   "398:393": {
     "inputs": {
       "clip_name": "gemma4_e2b_it_bf16.safetensors",
