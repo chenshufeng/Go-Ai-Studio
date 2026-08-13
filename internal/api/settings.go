@@ -2,6 +2,8 @@ package api
 
 import (
 	"fmt"
+	"math"
+	"math/rand"
 	"net/http"
 	"strconv"
 	"strings"
@@ -396,18 +398,27 @@ func getConfiguredGlobalSeed() int64 {
 	var settings []models.SystemSettings
 	db.DB.Find(&settings)
 
+	var seed int64
+	found := false
 	for _, s := range settings {
 		if s.Key != KeyGlobalSeed {
 			continue
 		}
-		seed, err := strconv.ParseInt(strings.TrimSpace(s.Value), 10, 64)
+		parsed, err := strconv.ParseInt(strings.TrimSpace(s.Value), 10, 64)
 		if err == nil {
-			return seed
+			seed = parsed
+			found = true
 		}
 		break
 	}
+	if !found {
+		seed, _ = strconv.ParseInt(defaultSettingValue(KeyGlobalSeed), 10, 64)
+	}
 
-	seed, _ := strconv.ParseInt(defaultSettingValue(KeyGlobalSeed), 10, 64)
+	// Negative seed means "random"; generate a non-negative random seed for ComfyUI.
+	if seed < 0 {
+		seed = rand.Int63n(math.MaxInt64)
+	}
 	return seed
 }
 

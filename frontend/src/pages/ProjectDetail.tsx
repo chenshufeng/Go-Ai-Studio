@@ -2112,15 +2112,19 @@ export default function ProjectDetail() {
   const confirmResetVideos = () => {
     setIsResetVideosConfirmOpen(false);
     const toastId = toast("正在重置视频状态...", {
-      description: "将删除完整视频、分段视频、过渡帧，清空生成字段并把状态重置为草稿",
+      description: "将删除未生成的完整视频、分段视频、过渡帧，已生成成功的视频会跳过",
     });
     axios
       .post(`/api/projects/${id}/videos/reset`)
       .then((res) => {
         fetchVideos(id!);
-        toast.success(`已重置 ${res.data.count} 条视频记录`, {
-          id: toastId,
-        });
+        const skipped = res.data.skipped_generated || 0;
+        toast.success(
+          skipped > 0
+            ? `已重置 ${res.data.count} 条视频，跳过 ${skipped} 条已生成视频`
+            : `已重置 ${res.data.count} 条视频记录`,
+          { id: toastId }
+        );
       })
       .catch((err) => {
         console.error(err);
@@ -2562,7 +2566,7 @@ export default function ProjectDetail() {
                     onClick={handleResetVideos}
                     className="flex items-center gap-2 border border-destructive/40 bg-background px-3 py-1.5 rounded-md text-sm text-destructive hover:bg-destructive/5 transition-colors"
                   >
-                    <RotateCcw className="w-4 h-4" /> 重置状态
+                    <RotateCcw className="w-4 h-4" /> 一键重置
                   </button>
                   {exportableEpisodes.length > 0 && (
                     <button

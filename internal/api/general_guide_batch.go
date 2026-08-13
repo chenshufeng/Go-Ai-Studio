@@ -33,6 +33,8 @@ type generalGuideProjectBatchSummary struct {
 	Queued        int      `json:"queued"`
 	Skipped       int      `json:"skipped"`
 	SkippedTitles []string `json:"skipped_titles,omitempty"`
+	Failed        int      `json:"failed"`
+	FailedTitles  []string `json:"failed_titles,omitempty"`
 }
 
 func listGeneralGuideScenesForProject(projectID uint) ([]models.GeneralGuideScene, error) {
@@ -387,22 +389,92 @@ func queueAndRenderGeneralGuideProjectImages(taskID string, project models.Gener
 
 func queueAndRenderGeneralGuideProjectVideos(taskID string, project models.GeneralGuideProject, scenes []models.GeneralGuideScene) (generalGuideProjectBatchSummary, error) {
 	summary := generalGuideProjectBatchSummary{}
-	queuedIDs := make([]uint, 0)
+	runnableCount := 0
+	for _, scene := range scenes {
+		if canQueueGeneralGuideSceneVideo(scene) {
+			runnableCount++
+		}
+	}
+
+	submitted := 0
 	for _, scene := range scenes {
 		if !canQueueGeneralGuideSceneVideo(scene) {
 			summary.Skipped++
 			summary.SkippedTitles = append(summary.SkippedTitles, generalGuideSceneDisplayName(scene))
 			continue
 		}
-		if _, err := startGeneralGuideSceneVideoTask(&scene, &project, getConfiguredGlobalSeed()); err != nil {
-			return summary, err
+
+		progress := 28 + int(float64(submitted)/float64(maxInt(1, runnableCount))*32)
+		task.GlobalTaskManager.UpdateTaskProgress(taskID, progress, fmt.Sprintf("正在生成视频 %d/%d：%s", submitted+1, runnableCount, generalGuideSceneDisplayName(scene)))
+
+		seed := getConfiguredGlobalSeed()
+		workflowJSON, workflowLabel, err := buildGeneralGuideVideoWorkflow(scene, project, seed)
+		if err != nil {
+			summary.Failed++
+			summary.FailedTitles = append(summary.FailedTitles, generalGuideSceneDisplayName(scene))
+			continue
 		}
-		queuedIDs = append(queuedIDs, scene.ID)
+
+		logComfyWorkflowPayload("General Guide Video ComfyUI Payload", workflowLabel, workflowJSON)
+		promptID, err := QueueComfyPrompt(workflowJSON)
+		if err != nil {
+			summary.Failed++
+			summary.FailedTitles = append(summary.FailedTitles, generalGuideSceneDisplayName(scene))
+			continue
+		}
+
+		if err := db.DB.Model(&models.GeneralGuideScene{}).Where("id = ?", scene.ID).Updates(map[string]interface{}{
+			"video_status":             "generating",
+			"video_current_task_id":    taskID,
+			"video_last_error":         "",
+			"generated_video":          "",
+			"video_generated_workflow": "",
+			"updated_at":               time.Now(),
+		}).Error; err != nil {
+			summary.Failed++
+			summary.FailedTitles = append(summary.FailedTitles, generalGuideSceneDisplayName(scene))
+			continue
+		}
+		BroadcastUpdate("general_guide_scene", scene.ID)
+
+		sceneKey := getGeneralGuideSceneFileKey(scene)
+		webPath, err := waitForGeneralGuideVideoOutput(promptID, project.Code, sceneKey, scene.ID, func() bool {
+			return shouldApplyGeneralGuideSceneVideoTaskResult(scene.ID, taskID)
+		})
+		if err != nil || strings.TrimSpace(webPath) == "" {
+			msg := "未获取到视频输出"
+			if err != nil {
+				msg = err.Error()
+			}
+			_ = db.DB.Model(&models.GeneralGuideScene{}).Where("id = ?", scene.ID).Updates(map[string]interface{}{
+				"video_status":          "failed",
+				"video_current_task_id": "",
+				"video_last_error":      msg,
+				"updated_at":            time.Now(),
+			}).Error
+			BroadcastUpdate("general_guide_scene", scene.ID)
+			summary.Failed++
+			summary.FailedTitles = append(summary.FailedTitles, generalGuideSceneDisplayName(scene))
+			continue
+		}
+
+		if !shouldApplyGeneralGuideSceneVideoTaskResult(scene.ID, taskID) {
+			summary.Skipped++
+			continue
+		}
+
+		_ = db.DB.Model(&models.GeneralGuideScene{}).Where("id = ?", scene.ID).Updates(map[string]interface{}{
+			"generated_video":          webPath,
+			"video_status":             "generated",
+			"video_current_task_id":    "",
+			"video_last_error":         "",
+			"video_generated_workflow": workflowLabel,
+			"updated_at":               time.Now(),
+		}).Error
+		BroadcastUpdate("general_guide_scene", scene.ID)
+		submitted++
 	}
-	summary.Queued = len(queuedIDs)
-	if err := waitForGeneralGuideSceneVideos(project.ID, queuedIDs, calculateGeneralGuideBatchTimeout(len(queuedIDs), 14*time.Minute, 5*time.Minute), taskID, 28, 60); err != nil {
-		return summary, err
-	}
+	summary.Queued = submitted
 	return summary, nil
 }
 

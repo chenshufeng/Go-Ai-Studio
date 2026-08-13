@@ -513,7 +513,13 @@ func ResetProjectVideos(c *gin.Context) {
 	}
 
 	resetCount := 0
+	skippedGenerated := 0
 	for _, video := range videos {
+		// 已生成成功的视频跳过，不重置
+		if video.Status == "generated" {
+			skippedGenerated++
+			continue
+		}
 		if err := resetVideoToDraft(&video); err != nil {
 			c.JSON(http.StatusInternalServerError, gin.H{"error": "Failed to reset videos"})
 			return
@@ -523,8 +529,9 @@ func ResetProjectVideos(c *gin.Context) {
 	}
 
 	c.JSON(http.StatusOK, gin.H{
-		"message": "Videos reset successfully",
-		"count":   resetCount,
+		"message":          "Videos reset successfully",
+		"count":            resetCount,
+		"skipped_generated": skippedGenerated,
 	})
 }
 
@@ -1290,6 +1297,8 @@ func HandleBatchGenerateVideosTask(t *models.Task) (interface{}, error) {
 		}
 	}
 
+	isLocal := getConfiguredVideoGenerationProvider() != VideoGenerationProviderJimeng
+
 	queuedCount := 0
 	for i, video := range videos {
 		progress := int(float64(i) / float64(total) * 100)
@@ -1301,12 +1310,24 @@ func HandleBatchGenerateVideosTask(t *models.Task) (interface{}, error) {
 		}
 		BroadcastUpdate("video", video.ID)
 
-		if err := queueConfiguredVideoRender(video.ID, payload.ProjectID); err != nil {
-			Log(LogLevelError, "Batch Video Error", fmt.Sprintf("Failed to queue video %d: %v", video.ID, err))
-			continue
+		if isLocal {
+			// 本地 ComfyUI 资源有限，严格排队：提交一个、等完成、再提交下一个
+			if err := ensureVideoSegmentPlan(video.ID, payload.ProjectID); err != nil {
+				Log(LogLevelError, "Batch Video Error", fmt.Sprintf("Failed to create segment plan for video %d: %v", video.ID, err))
+				continue
+			}
+			if err := renderVideoSegments(video.ID, payload.ProjectID, t.ID, 1, nil); err != nil {
+				Log(LogLevelError, "Batch Video Error", fmt.Sprintf("Failed to render video %d: %v", video.ID, err))
+				continue
+			}
+		} else {
+			if err := queueConfiguredVideoRender(video.ID, payload.ProjectID); err != nil {
+				Log(LogLevelError, "Batch Video Error", fmt.Sprintf("Failed to queue video %d: %v", video.ID, err))
+				continue
+			}
+			time.Sleep(300 * time.Millisecond)
 		}
 		queuedCount++
-		time.Sleep(300 * time.Millisecond)
 	}
 
 	return fmt.Sprintf("Batch processing completed. %d/%d videos queued for generation.", queuedCount, total), nil
@@ -1321,10 +1342,59 @@ func HandleRenderVideoTask(t *models.Task) (interface{}, error) {
 		return nil, fmt.Errorf("invalid payload: %v", err)
 	}
 
-	if err := queueConfiguredVideoRender(payload.VideoID, payload.ProjectID); err != nil {
+	provider := getConfiguredVideoGenerationProvider()
+	fmt.Printf("[HandleRenderVideoTask] video=%d project=%d provider=%s\n", payload.VideoID, payload.ProjectID, provider)
+
+	if provider == VideoGenerationProviderJimeng {
+		// 即梦在线 API：提交即返回，不阻塞 worker
+		if err := queueConfiguredVideoRender(payload.VideoID, payload.ProjectID); err != nil {
+			return nil, err
+		}
+		return "Video render submitted successfully", nil
+	}
+
+	// 本地 ComfyUI：同步排队，提交一个、等完成、再处理下一个
+	// 先确保分段计划已创建（首次生成时还没有 segments）
+	fmt.Printf("[HandleRenderVideoTask] ensuring segment plan for video %d...\n", payload.VideoID)
+	if err := ensureVideoSegmentPlan(payload.VideoID, payload.ProjectID); err != nil {
+		fmt.Printf("[HandleRenderVideoTask] segment plan failed: %v\n", err)
+		return nil, fmt.Errorf("failed to create segment plan: %w", err)
+	}
+	fmt.Printf("[HandleRenderVideoTask] starting renderVideoSegments for video %d...\n", payload.VideoID)
+	if err := renderVideoSegments(payload.VideoID, payload.ProjectID, t.ID, 1, nil); err != nil {
+		fmt.Printf("[HandleRenderVideoTask] renderVideoSegments failed: %v\n", err)
 		return nil, err
 	}
-	return "Video render submitted successfully", nil
+	fmt.Printf("[HandleRenderVideoTask] video %d render completed\n", payload.VideoID)
+	return "Video render completed", nil
+}
+
+// ensureVideoSegmentPlan 确保视频已有分段计划，首次生成时自动创建
+func ensureVideoSegmentPlan(videoID uint, projectID uint) error {
+	var video models.Video
+	if err := db.DB.First(&video, videoID).Error; err != nil {
+		return fmt.Errorf("video not found")
+	}
+
+	var segmentCount int64
+	if err := db.DB.Model(&models.VideoSegment{}).Where("video_id = ?", video.ID).Count(&segmentCount).Error; err != nil {
+		return err
+	}
+	if segmentCount > 0 {
+		return nil // 已有分段计划，无需创建
+	}
+
+	var project models.Project
+	if err := db.DB.First(&project, projectID).Error; err != nil {
+		return fmt.Errorf("project not found")
+	}
+
+	lang := loadPromptLanguage()
+	plan, err := buildStoredVideoSegmentPlan(video, "ltx", lang)
+	if err != nil {
+		return err
+	}
+	return saveVideoSegmentPlan(&video, project, plan)
 }
 
 // triggerVideoGeneration queues the ComfyUI workflow

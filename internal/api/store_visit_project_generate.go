@@ -777,8 +777,26 @@ func queueAndRenderStoreVisitProjectVideos(taskID string, project models.StoreVi
 	skippedMissing := []string{}
 	skippedGenerated := []string{}
 	failed := []string{}
-	queued := make([]queuedStoreVisitSpotRender, 0)
+	queuedCount := 0
 
+	// 先统计可运行的 spot 数量用于进度计算
+	runnableCount := 0
+	for _, spot := range spots {
+		spotType := normalizeStoreVisitSpotType(spot.SpotType, spot.Name)
+		if spotType == storeVisitSpotTypeDishGeneration || isDeprecatedStoreVisitSpotType(spotType) {
+			continue
+		}
+		if strings.TrimSpace(spot.GeneratedImage) == "" || strings.TrimSpace(spot.VideoPositivePrompt) == "" {
+			continue
+		}
+		if strings.TrimSpace(spot.GeneratedVideo) != "" && spot.VideoStatus == "generated" {
+			continue
+		}
+		runnableCount++
+	}
+
+	// 严格排队：提交一个视频到 ComfyUI → 等待完成 → 再提交下一个
+	submitted := 0
 	for idx, spot := range spots {
 		spotType := normalizeStoreVisitSpotType(spot.SpotType, spot.Name)
 		if spotType == storeVisitSpotTypeDishGeneration || isDeprecatedStoreVisitSpotType(spotType) {
@@ -797,6 +815,10 @@ func queueAndRenderStoreVisitProjectVideos(taskID string, project models.StoreVi
 			skippedGenerated = append(skippedGenerated, label)
 			continue
 		}
+
+		progress := 74 + int(float64(submitted)/float64(maxInt(1, runnableCount))*12)
+		task.GlobalTaskManager.UpdateTaskProgress(taskID, progress, fmt.Sprintf("正在生成视频 %d/%d：%s", submitted+1, runnableCount, label))
+
 		seed := getConfiguredGlobalSeed() + int64(idx*37+101)
 		workflowJSON, workflowLabel, err := buildStoreVisitVideoWorkflow(spot, project, seed)
 		if err != nil {
@@ -821,46 +843,41 @@ func queueAndRenderStoreVisitProjectVideos(taskID string, project models.StoreVi
 			continue
 		}
 		BroadcastUpdate("store_visit_spot", spot.ID)
-		queued = append(queued, queuedStoreVisitSpotRender{
-			Spot:          spot,
-			PromptID:      promptID,
-			WorkflowLabel: workflowLabel,
-		})
-	}
 
-	for idx, item := range queued {
-		task.GlobalTaskManager.UpdateTaskProgress(taskID, 74+int(float64(idx+1)/float64(maxInt(1, len(queued)))*12), fmt.Sprintf("等待视频生成：%s", getStoreVisitSpotDisplayName(item.Spot)))
-		webPath, err := waitForStoreVisitVideoOutput(item.PromptID, project.Code, getStoreVisitSpotFileKey(item.Spot), item.Spot.ID, func() bool {
-			return shouldApplyStoreVisitVideoTaskResult(item.Spot.ID, taskID)
+		// 等待当前视频完成后再提交下一个
+		webPath, err := waitForStoreVisitVideoOutput(promptID, project.Code, getStoreVisitSpotFileKey(spot), spot.ID, func() bool {
+			return shouldApplyStoreVisitVideoTaskResult(spot.ID, taskID)
 		})
 		if err != nil || strings.TrimSpace(webPath) == "" {
 			msg := "未获取到视频输出"
 			if err != nil {
 				msg = err.Error()
 			}
-			failed = append(failed, fmt.Sprintf("%s: %s", getStoreVisitSpotDisplayName(item.Spot), msg))
-			_ = db.DB.Model(&models.StoreVisitSpot{}).Where("id = ?", item.Spot.ID).Updates(map[string]interface{}{
+			failed = append(failed, fmt.Sprintf("%s: %s", label, msg))
+			_ = db.DB.Model(&models.StoreVisitSpot{}).Where("id = ?", spot.ID).Updates(map[string]interface{}{
 				"video_status":          "failed",
 				"video_current_task_id": "",
 				"video_last_error":      msg,
 				"updated_at":            time.Now(),
 			}).Error
-			BroadcastUpdate("store_visit_spot", item.Spot.ID)
+			BroadcastUpdate("store_visit_spot", spot.ID)
 			continue
 		}
-		_ = db.DB.Model(&models.StoreVisitSpot{}).Where("id = ?", item.Spot.ID).Updates(map[string]interface{}{
+		_ = db.DB.Model(&models.StoreVisitSpot{}).Where("id = ?", spot.ID).Updates(map[string]interface{}{
 			"generated_video":          webPath,
 			"video_status":             "generated",
 			"video_current_task_id":    "",
 			"video_last_error":         "",
-			"video_generated_workflow": item.WorkflowLabel,
+			"video_generated_workflow": workflowLabel,
 			"updated_at":               time.Now(),
 		}).Error
-		BroadcastUpdate("store_visit_spot", item.Spot.ID)
+		BroadcastUpdate("store_visit_spot", spot.ID)
+		submitted++
 	}
+	queuedCount = submitted
 
 	return gin.H{
-		"queued":            len(queued),
+		"queued":            queuedCount,
 		"skipped_generated": skippedGenerated,
 		"skipped_missing":   skippedMissing,
 		"failed":            failed,
@@ -884,9 +901,10 @@ func queueAndRenderStoreVisitProjectDishVideos(taskID string, project models.Sto
 	}
 	skipped := []string{}
 	failed := []string{}
-	queued := make([]queuedStoreVisitDishRender, 0)
 
-	for idx, item := range items {
+	// 先统计可运行的 item 数量用于进度计算
+	runnableCount := 0
+	for _, item := range items {
 		label := fmt.Sprintf("菜品生成 %d", item.SortOrder)
 		if len(decodeStoreVisitDishGenerationFrames(item)) < 2 {
 			skipped = append(skipped, label)
@@ -896,6 +914,23 @@ func queueAndRenderStoreVisitProjectDishVideos(taskID string, project models.Sto
 			skipped = append(skipped, label)
 			continue
 		}
+		runnableCount++
+	}
+
+	// 严格排队：提交一个菜品视频到 ComfyUI → 等待完成 → 再提交下一个
+	submitted := 0
+	for idx, item := range items {
+		label := fmt.Sprintf("菜品生成 %d", item.SortOrder)
+		if len(decodeStoreVisitDishGenerationFrames(item)) < 2 {
+			continue
+		}
+		if strings.TrimSpace(item.GeneratedVideo) != "" && item.VideoStatus == "generated" {
+			continue
+		}
+
+		progress := 88 + int(float64(submitted)/float64(maxInt(1, runnableCount))*10)
+		task.GlobalTaskManager.UpdateTaskProgress(taskID, progress, fmt.Sprintf("正在生成菜品视频 %d/%d：%d", submitted+1, runnableCount, item.SortOrder))
+
 		seed := getConfiguredGlobalSeed() + int64(idx*53+201)
 		workflowJSON, workflowLabel, err := buildStoreVisitDishGenerationWorkflow(item, *dishSpot, project, seed)
 		if err != nil {
@@ -919,25 +954,18 @@ func queueAndRenderStoreVisitProjectDishVideos(taskID string, project models.Sto
 			failed = append(failed, fmt.Sprintf("%s: %v", label, err))
 			continue
 		}
-		queued = append(queued, queuedStoreVisitDishRender{
-			Item:          item,
-			PromptID:      promptID,
-			WorkflowLabel: workflowLabel,
-		})
-	}
 
-	for idx, item := range queued {
-		task.GlobalTaskManager.UpdateTaskProgress(taskID, 88+int(float64(idx+1)/float64(maxInt(1, len(queued)))*10), fmt.Sprintf("等待菜品视频生成：%d", item.Item.SortOrder))
-		webPath, err := waitForStoreVisitDishGenerationVideoOutput(item.PromptID, project.Code, getStoreVisitSpotFileKey(*dishSpot), item.Item.ID, func() bool {
-			return shouldApplyStoreVisitDishGenerationTaskResult(item.Item.ID, taskID)
+		// 等待当前菜品视频完成后再提交下一个
+		webPath, err := waitForStoreVisitDishGenerationVideoOutput(promptID, project.Code, getStoreVisitSpotFileKey(*dishSpot), item.ID, func() bool {
+			return shouldApplyStoreVisitDishGenerationTaskResult(item.ID, taskID)
 		})
 		if err != nil || strings.TrimSpace(webPath) == "" {
 			msg := "未获取到菜品视频输出"
 			if err != nil {
 				msg = err.Error()
 			}
-			failed = append(failed, fmt.Sprintf("菜品生成 %d: %s", item.Item.SortOrder, msg))
-			_ = db.DB.Model(&models.StoreVisitDishGenerationItem{}).Where("id = ?", item.Item.ID).Updates(map[string]interface{}{
+			failed = append(failed, fmt.Sprintf("菜品生成 %d: %s", item.SortOrder, msg))
+			_ = db.DB.Model(&models.StoreVisitDishGenerationItem{}).Where("id = ?", item.ID).Updates(map[string]interface{}{
 				"video_status":          "failed",
 				"video_current_task_id": "",
 				"video_last_error":      msg,
@@ -945,18 +973,19 @@ func queueAndRenderStoreVisitProjectDishVideos(taskID string, project models.Sto
 			}).Error
 			continue
 		}
-		_ = db.DB.Model(&models.StoreVisitDishGenerationItem{}).Where("id = ?", item.Item.ID).Updates(map[string]interface{}{
+		_ = db.DB.Model(&models.StoreVisitDishGenerationItem{}).Where("id = ?", item.ID).Updates(map[string]interface{}{
 			"generated_video":          webPath,
 			"video_status":             "generated",
 			"video_current_task_id":    "",
 			"video_last_error":         "",
-			"video_generated_workflow": item.WorkflowLabel,
+			"video_generated_workflow": workflowLabel,
 			"updated_at":               time.Now(),
 		}).Error
+		submitted++
 	}
 
 	return gin.H{
-		"queued":  len(queued),
+		"queued":  submitted,
 		"skipped": skipped,
 		"failed":  failed,
 	}, nil
