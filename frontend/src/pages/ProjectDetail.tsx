@@ -24,6 +24,7 @@ import type {
   Scene,
   Video,
   LocalizedPromptText,
+  LLMStreamState,
 } from "@/types";
 import { toast } from "sonner";
 import { Input } from "@/components/ui/input";
@@ -639,6 +640,12 @@ export default function ProjectDetail() {
   >({});
   const promptRepairPollersRef = useRef<Record<string, number>>({});
 
+  // Batch Task LLM Stream State
+  const [batchTaskId, setBatchTaskId] = useState<string | null>(null);
+  const [batchTaskStream, setBatchTaskStream] = useState<LLMStreamState | null>(null);
+  const [showBatchTaskStream, setShowBatchTaskStream] = useState(false);
+  const batchTaskStreamRef = useRef<HTMLDivElement>(null);
+
   // Default Settings (fetched on mount)
   const [defaultSettings, setDefaultSettings] = useState<any>({});
 
@@ -704,6 +711,44 @@ export default function ProjectDetail() {
       eventSource.close();
     };
   }, [id]);
+
+  // Poll batch task LLM stream state
+  useEffect(() => {
+    if (!batchTaskId || !showBatchTaskStream) return;
+    let stopped = false;
+
+    const fetchStream = () => {
+      axios
+        .get(`/api/tasks/${batchTaskId}/llm-stream`)
+        .then((res) => {
+          if (!stopped) {
+            setBatchTaskStream(res.data?.stream || null);
+          }
+        })
+        .catch((err) => {
+          if (!stopped) console.error(err);
+        });
+    };
+
+    fetchStream();
+    const timer = window.setInterval(fetchStream, 1000);
+
+    return () => {
+      stopped = true;
+      window.clearInterval(timer);
+    };
+  }, [batchTaskId, showBatchTaskStream]);
+
+  // Auto-scroll batch stream content
+  useEffect(() => {
+    if (!showBatchTaskStream) return;
+    const el = batchTaskStreamRef.current;
+    if (!el) return;
+    const rafId = window.requestAnimationFrame(() => {
+      el.scrollTop = el.scrollHeight;
+    });
+    return () => window.cancelAnimationFrame(rafId);
+  }, [showBatchTaskStream, batchTaskStream?.content]);
 
   useEffect(() => {
     const handleScroll = () => {
@@ -2069,17 +2114,25 @@ export default function ProjectDetail() {
       toast.error("当前还没有可处理的镜头，请先完成镜头入库");
       return;
     }
+    console.log("[batch-regenerate-video-prompts] submitting, summaries count:", videoEpisodeSummaries.length);
     const toastId = toast("正在批量重新生成视频提示词...", {
       description: "将根据当前工作流格式为所有镜头重新生成视频提示词",
     });
     axios
       .post(`/api/projects/${id}/batch-regenerate-video-prompts`)
-      .then(() => {
+      .then((res) => {
+        console.log("[batch-regenerate-video-prompts] success", res.data);
+        const tid = String(res.data?.task_id || "").trim();
+        if (tid) {
+          setBatchTaskId(tid);
+          setShowBatchTaskStream(true);
+          setBatchTaskStream(null);
+        }
         fetchVideos(id!);
         toast.success("批量提示词重推任务已提交", { id: toastId });
       })
       .catch((err) => {
-        console.error(err);
+        console.error("[batch-regenerate-video-prompts] error", err);
         toast.error(err.response?.data?.error || "提交任务失败", {
           id: toastId,
         });
@@ -2552,14 +2605,26 @@ export default function ProjectDetail() {
               <>
                 <button
                   onClick={handleBatchRegenerateVideoPrompts}
-                  className="w-full flex items-center gap-2 bg-secondary/50 hover:bg-secondary text-secondary-foreground px-4 py-3 rounded-md transition-colors text-sm"
+                  disabled={videoEpisodeSummaries.length === 0}
+                  title={videoEpisodeSummaries.length === 0 ? "暂无视频数据，请先完成镜头入库" : ""}
+                  className={`w-full flex items-center gap-2 px-4 py-3 rounded-md transition-colors text-sm ${
+                    videoEpisodeSummaries.length === 0
+                      ? "bg-secondary/20 text-muted-foreground/50 cursor-not-allowed"
+                      : "bg-secondary/50 hover:bg-secondary text-secondary-foreground"
+                  }`}
                 >
                   <FileText className="w-4 h-4 text-blue-500" />
                   批量重推视频提示词
                 </button>
                 <button
                   onClick={handleBatchGenerateVideos}
-                  className="w-full flex items-center gap-2 bg-secondary/50 hover:bg-secondary text-secondary-foreground px-4 py-3 rounded-md transition-colors text-sm"
+                  disabled={videoEpisodeSummaries.length === 0}
+                  title={videoEpisodeSummaries.length === 0 ? "暂无视频数据，请先完成镜头入库" : ""}
+                  className={`w-full flex items-center gap-2 px-4 py-3 rounded-md transition-colors text-sm ${
+                    videoEpisodeSummaries.length === 0
+                      ? "bg-secondary/20 text-muted-foreground/50 cursor-not-allowed"
+                      : "bg-secondary/50 hover:bg-secondary text-secondary-foreground"
+                  }`}
                 >
                   <Film className="w-4 h-4 text-orange-500" />
                   生成所有视频
@@ -4819,6 +4884,39 @@ export default function ProjectDetail() {
           <RefreshCw className="h-4 w-4" />
           刷新当前列表
         </button>
+      )}
+
+      {/* Batch Task LLM Stream Panel */}
+      {showBatchTaskStream && (
+        <div className="fixed bottom-6 left-6 z-50 w-[480px] max-w-[calc(100vw-3rem)] rounded-lg border border-border bg-card shadow-2xl">
+          <div className="flex items-center justify-between border-b border-border px-4 py-2">
+            <div className="flex items-center gap-2 text-sm font-medium">
+              <FileText className="h-4 w-4 text-blue-500" />
+              批量重推视频提示词
+              {batchTaskStream?.status && (
+                <span className="text-xs text-muted-foreground">
+                  ({batchTaskStream.status})
+                </span>
+              )}
+            </div>
+            <button
+              onClick={() => {
+                setShowBatchTaskStream(false);
+                setBatchTaskId(null);
+                setBatchTaskStream(null);
+              }}
+              className="p-1 hover:bg-accent rounded transition-colors"
+            >
+              <X className="h-4 w-4" />
+            </button>
+          </div>
+          <div
+            ref={batchTaskStreamRef}
+            className="h-[240px] overflow-y-auto px-4 py-3 font-mono text-xs whitespace-pre-wrap break-words text-muted-foreground"
+          >
+            {batchTaskStream?.content || "正在等待 LLM 返回实时流..."}
+          </div>
+        </div>
       )}
     </div>
   );

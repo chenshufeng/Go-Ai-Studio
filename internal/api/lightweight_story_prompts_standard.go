@@ -20,13 +20,37 @@ func buildStandardLightweightStoryPrompts(ctx lightweightStoryPromptContext) (st
 	if strings.TrimSpace(ctx.SelectedTagRules) != "" {
 		tagRulesBlock = "\n\n" + strings.TrimSpace(ctx.SelectedTagRules)
 	}
+
+	isMiniMaxH3 := ctx.WorkflowFamily == "minimax_h3"
+
+	// Dynamic video_prompt rules based on workflow family
+	videoPromptLangRule := "所有字段值必须使用简体中文；只有 video_prompt 的固定标签允许使用英文 Style / Phase / Audio，标签后的正文内容必须使用中文。"
+	videoPromptModelTarget := "LTX2.3"
+	videoPromptFormatRules := `20. video_prompt 必须严格使用固定英文标签模板，且必须正好是 5 行：
+    Style:
+    Phase 1 (起止秒数):
+    Audio:
+    Phase 2 (起止秒数):
+    Audio:
+21. video_prompt 的时间范围必须和 duration_seconds 严格对应，阶段 1 从 0.0 秒开始，阶段 2 必须接续到 duration_seconds 结束。
+22. video_prompt 不要写角色名字；如果镜头里有角色，必须用“画面位置 + 明确年龄 + 可见外观锚点”的方式指代谁在动；若需要补年龄阶段，也必须放在明确年龄之后，不要只写“青年男性”“青年女性”。
+23. video_prompt 只能写 LTX2.3 能直接稳定理解的动作、表情、镜头变化、环境变化和环境音，不要写抽象判断、故事标签、导演术语或数据库名字。`
+
+	if isMiniMaxH3 {
+		videoPromptLangRule = "所有字段值必须使用简体中文。"
+		videoPromptModelTarget = "MiniMax H3"
+		videoPromptFormatRules = `20. video_prompt 使用中文自由文本格式，结构为：开头一段总体描述（概括视觉风格、光影、材质、色调和环境氛围，用 <Picture 1> 引用输入图像），然后按 SHOT 分段描述镜头运动（每个 SHOT 以“SHOT N:”开头，描述运镜、光影变化、材质细节和环境微动），最后以“Audio:”开头写一段音效与音乐描述。
+21. video_prompt 不需要负向提示词，不要写任何“不要”“禁止”“排除”类的排除性描述。
+22. video_prompt 不要写角色名字；如果镜头里有角色，必须用“画面位置 + 明确年龄 + 可见外观锚点”的方式指代谁在动。
+23. video_prompt 只能写 MiniMax H3 能直接稳定理解的动作、表情、镜头变化、环境变化和环境音，不要写抽象判断、故事标签、导演术语或数据库名字。每个 SHOT 只允许 1 个主导视觉事件，SHOT 数量通常 2-4 个。`
+	}
 	systemPrompt := fmt.Sprintf(`你是“旁白驱动 + 导演式视觉分镜 + 图像视频提示词生成”这条普通链路的唯一内容生成器。
 
 你必须严格执行以下硬约束：
 1. 只能返回一次、且只能返回一个完整 JSON。
 2. 禁止输出 JSON 之外的任何解释、标题、注释、代码块标记。
 3. 顶层 JSON 必须且只能包含：total_scenes、characters、scenes、episode_memory。
-4. 所有字段值必须使用简体中文；只有 video_prompt 的固定标签允许使用英文 Style / Phase / Audio，标签后的正文内容必须使用中文。
+4. %s
 5. existing_characters 是项目已锁定角色资产列表。若数组为空，代表当前没有既有锁定角色；不要虚构旧角色来源、旧外观资产或历史关系。若数组非空，它们只作为续写输入和场景复用依据，不允许修改，也不允许再次作为旧角色回填到输出的 characters 数组。
 6. characters 数组只能返回本集首次出现的新角色；scenes 中出现的人物锚点只能来自 existing_characters 与本次返回的 characters。
 7. 新角色必须完整生成 name、gender、age、height、era、country、appearance。gender 只能返回：男性、女性、其他。
@@ -47,16 +71,8 @@ func buildStandardLightweightStoryPrompts(ctx lightweightStoryPromptContext) (st
 17. 只要某个 scene 出现角色，就必须在主体行里写出“国别或文化身份 + 性别 + 明确年龄 + 明确身高 + 当前机位可见的永久人物锚点 + 当前镜头状态”；若仍需补年龄阶段，也必须放在明确年龄之后。不要写角色名字，不要写“青年男性”“青年女性”“华夏青年女性”这类模糊或文学化身份短语。%s
 18. scene 里的永久人物锚点部分必须尽量沿用 appearance 的原有关键词和顺序，但 scene 不是照抄完整正脸设定；必须先判断当前镜头机位、朝向、遮挡和动作，再只输出当前真正看得见的那部分连续状态。%s
 19. image_prompt 必须明确景别、位置关系、镜头重心和镜头功能；地名和专有地点名称只能用于内部理解，最终都必须改写成可见环境、建筑、地面、器物、光线和空间描述。
-19.5 image_prompt 的首要目标，是让 z-image 这类单张首帧图生成模型稳定画出当前镜头起点；video_prompt 的首要目标，是让 LTX2.3 从这张首帧继续完成可见动作、受控运镜和环境变化。不要把大模型能理解但 z-image 或 LTX2.3 不容易直接执行的白话文、文学化总结和抽象推理留在最终提示词里。
-20. video_prompt 必须严格使用固定英文标签模板，且必须正好是 5 行：
-    Style:
-    Phase 1 (起止秒数):
-    Audio:
-    Phase 2 (起止秒数):
-    Audio:
-21. video_prompt 的时间范围必须和 duration_seconds 严格对应，阶段 1 从 0.0 秒开始，阶段 2 必须接续到 duration_seconds 结束。
-22. video_prompt 不要写角色名字；如果镜头里有角色，必须用“画面位置 + 明确年龄 + 可见外观锚点”的方式指代谁在动；若需要补年龄阶段，也必须放在明确年龄之后，不要只写“青年男性”“青年女性”。
-23. video_prompt 只能写 LTX2.3 能直接稳定理解的动作、表情、镜头变化、环境变化和环境音，不要写抽象判断、故事标签、导演术语或数据库名字。
+19.5 image_prompt 的首要目标，是让 z-image 这类单张首帧图生成模型稳定画出当前镜头起点；video_prompt 的首要目标，是让 %s 从这张首帧继续完成可见动作、受控运镜和环境变化。不要把大模型能理解但 z-image 或 %s 不容易直接执行的白话文、文学化总结和抽象推理留在最终提示词里。
+%s
 24. 若当前镜头的核心事件是攻击、受击、递交、接住、按住、掐住、救人、扶人、推开、拉住、交接道具或任何必须依赖两方互动才能成立的动作，首帧图里就必须先把关键参与者都建立出来；只有不重要的背景人物可以留在画外。若首帧图里没有第二个关键人物，就不要让 video_prompt 依赖画外主角补完整个动作，应直接拆成更多 scene。
 25. 刀、剑、枪、棍、长鞭、长杆、长针束、箭矢、令牌、盒子、卷轴、符纸、药瓶和其他会在多个镜头持续出现的道具，都必须先建立稳定的物理 canon：它是什么类型、大小级别、长短、厚薄、材质、颜色、边缘或轮廓，以及它是单手物、双手物、贴身物还是可投掷物。后续镜头若无明确变化，不要让同一道具忽然变长、变短、变厚、变形、变材质或改变使用方式。
 26. 对长剑、长枪、长棍、长柄武器、细长暗器束和其他细长道具，只要后续镜头运动、人物动作或构图变化会暴露出更多长度，首帧图就必须先建立足够的可见长度与朝向；不要让镜头在后续运动里替模型脑补隐藏长度，导致武器被无缘由拉长到不合理尺寸。
@@ -100,7 +116,7 @@ func buildStandardLightweightStoryPrompts(ctx lightweightStoryPromptContext) (st
     ],
       "open_threads": []
   }
-}`, buildReadableNarrationRule(), buildCurrentVisibleStateCarryRule(), buildVisibleAnchorReuseRule(), sceneSegmentationGuidance, tagRulesBlock)
+}`, videoPromptLangRule, buildReadableNarrationRule(), buildCurrentVisibleStateCarryRule(), buildVisibleAnchorReuseRule(), videoPromptModelTarget, videoPromptModelTarget, videoPromptFormatRules, sceneSegmentationGuidance, tagRulesBlock)
 
 	userSections := []string{
 		fmt.Sprintf(`请根据以下输入，一次性完整生成本集内容。
@@ -140,13 +156,25 @@ func buildStandardLightweightStoryPrompts(ctx lightweightStoryPromptContext) (st
 		"不开口镜头里，长对白、长争执、长信息揭露必须先提炼成解说式精华，再拆到多个 scene。",
 		buildReadableNarrationRule(),
 		"普通链路下，Audio 只能写环境音，不要写台词文本，不要让人物出现明确说话口型。",
-		"video_prompt 固定使用英文标签 Style / Phase 1 / Audio / Phase 2 / Audio，只有标签后的正文内容写中文。",
+	}
+
+	if isMiniMaxH3 {
+		extraRequirements = append(extraRequirements,
+			"video_prompt 使用中文自由文本，开头总体描述 + SHOT 分段 + Audio 段，不需要 Style/Phase 标签。",
+		)
+	} else {
+		extraRequirements = append(extraRequirements,
+			"video_prompt 固定使用英文标签 Style / Phase 1 / Audio / Phase 2 / Audio，只有标签后的正文内容写中文。",
+		)
+	}
+
+	extraRequirements = append(extraRequirements,
 		"video_prompt 不要写角色名字，也不要写地名、寺名、山名、湖名和方向词；如果需要交代远景或地标，只能写可见轮廓、层级和空间关系。",
 		"video_prompt 不要默认写成微动，也不要默认写慢；你必须先根据剧情事件判断自然速度。",
 		"每个 phase 应围绕 1 个主导事件组织，可以包含 1 个主导人物动作、1 到 2 个重要联动反应、若干弱背景反应和 1 个主导环境或镜头变化；不要在一个 phase 里塞满多人互不相关的大动作。",
 		"video_prompt 的优先级必须固定为：先保证叙事中心人物动作成立，再保证重要联动反应成立，最后再补环境动态；环境动态不能替代人物表演。",
 		"不要返回任何解释，只返回 JSON。",
-	}
+	)
 
 	userPrompt := strings.Join(userSections, "\n\n") + "\n\n额外要求：\n- " + strings.Join(extraRequirements, "\n- ")
 	return systemPrompt, userPrompt

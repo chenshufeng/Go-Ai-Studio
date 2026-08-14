@@ -1283,6 +1283,7 @@ func HandleBatchRegenerateVideoPromptsTask(t *models.Task) (interface{}, error) 
 
 	lang := loadPromptLanguage()
 	successCount := 0
+	const maxLLMRetries = 3
 
 	for i, video := range videos {
 		progress := int(float64(i) / float64(total) * 100)
@@ -1295,22 +1296,48 @@ func HandleBatchRegenerateVideoPromptsTask(t *models.Task) (interface{}, error) 
 
 		if isMiniMaxH3 {
 			systemPrompt, userPrompt := constructMiniMaxH3RefinePrompt(video, project, lang)
-			enhancedPrompt, err := callLLMMiniMaxH3Prompt(llmProvider, systemPrompt, userPrompt, t.ID)
+			var enhancedPrompt string
+			var err error
+			for attempt := 1; attempt <= maxLLMRetries; attempt++ {
+				enhancedPrompt, err = callLLMMiniMaxH3Prompt(llmProvider, systemPrompt, userPrompt, t.ID)
+				if err == nil {
+					break
+				}
+				if isRetryableLLMError(err) || strings.Contains(err.Error(), "empty completion") {
+					Log(LogLevelWarn, "Batch Prompt Retry", fmt.Sprintf("Video %d attempt %d/%d failed: %v, retrying...", video.ID, attempt, maxLLMRetries, err))
+					time.Sleep(time.Duration(attempt) * 3 * time.Second)
+					continue
+				}
+				break
+			}
 			if err != nil {
-				Log(LogLevelError, "Batch Prompt Error", fmt.Sprintf("LLM failed for video %d: %v", video.ID, err))
+				Log(LogLevelError, "Batch Prompt Error", fmt.Sprintf("LLM failed for video %d after %d attempts: %v", video.ID, maxLLMRetries, err))
 				continue
 			}
 			video.VideoPrompt = enhancedPrompt
 		} else {
 			systemPrompt, userPrompt := constructVideoFingerprintRefinePrompt(video, project, lang)
-			fingerprintPayload, err := callLLMVideoFingerprint(llmProvider, systemPrompt, userPrompt, t.ID)
+			var fingerprintPayload *VideoFingerprintPayload
+			var err error
+			for attempt := 1; attempt <= maxLLMRetries; attempt++ {
+				fingerprintPayload, err = callLLMVideoFingerprint(llmProvider, systemPrompt, userPrompt, t.ID)
+				if err == nil {
+					break
+				}
+				if isRetryableLLMError(err) || strings.Contains(err.Error(), "empty completion") {
+					Log(LogLevelWarn, "Batch Prompt Retry", fmt.Sprintf("Video %d attempt %d/%d failed: %v, retrying...", video.ID, attempt, maxLLMRetries, err))
+					time.Sleep(time.Duration(attempt) * 3 * time.Second)
+					continue
+				}
+				break
+			}
 			if err != nil {
-				Log(LogLevelError, "Batch Prompt Error", fmt.Sprintf("LLM failed for video %d: %v", video.ID, err))
+				Log(LogLevelError, "Batch Prompt Error", fmt.Sprintf("LLM failed for video %d after %d attempts: %v", video.ID, maxLLMRetries, err))
 				continue
 			}
-			serialized, err := json.MarshalIndent(fingerprintPayload, "", "  ")
-			if err != nil {
-				Log(LogLevelError, "Batch Prompt Error", fmt.Sprintf("Failed to serialize fingerprint for video %d: %v", video.ID, err))
+			serialized, serr := json.MarshalIndent(fingerprintPayload, "", "  ")
+			if serr != nil {
+				Log(LogLevelError, "Batch Prompt Error", fmt.Sprintf("Failed to serialize fingerprint for video %d: %v", video.ID, serr))
 				continue
 			}
 			video.VideoFingerprint = string(serialized)

@@ -116,6 +116,7 @@ type lightweightStoryPromptContext struct {
 	SceneImageHeight           int
 	SceneImageFrameType        string
 	FixedVideoFPS              int
+	WorkflowFamily             string
 }
 
 func emptyEpisodeMemory() lightweightStoryEpisodeMemory {
@@ -209,6 +210,8 @@ func buildLightweightStoryPromptContext(project models.Project, req models.AutoG
 		return lightweightStoryPromptContext{}, err
 	}
 
+	workflowFamily, _ := resolveSelectedVideoWorkflowFamily()
+
 	return lightweightStoryPromptContext{
 		Project:                    project,
 		Request:                    req,
@@ -220,6 +223,7 @@ func buildLightweightStoryPromptContext(project models.Project, req models.AutoG
 		SceneImageHeight:           sceneImageHeight,
 		SceneImageFrameType:        describeFrameType(sceneImageWidth, sceneImageHeight),
 		FixedVideoFPS:              defaultSegmentFPS,
+		WorkflowFamily:             strings.TrimSpace(strings.ToLower(workflowFamily)),
 	}, nil
 }
 
